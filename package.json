@@ -1,0 +1,57 @@
+{
+  "name": "claude-security",
+  "version": "0.1.1",
+  "description": "Claude-powered security scanning: CLI and TypeScript SDK that drives the Claude Agent SDK through bundled scan skills and seals results into a verifiable scan contract (JSON, SARIF, Markdown).",
+  "license": "Apache-2.0",
+  "author": "vrk",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vrk176/claude-security.git"
+  },
+  "homepage": "https://github.com/vrk176/claude-security#readme",
+  "bugs": {
+    "url": "https://github.com/vrk176/claude-security/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "claude-security": "bin/claude-security.mjs"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "plugin",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.220",
+    "ajv": "8.20.0",
+    "fast-uri": "3.1.4"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.17",
+    "typescript": "5.7.3"
+  },
+  "keywords": [
+    "security",
+    "sast",
+    "static-analysis",
+    "sarif",
+    "claude",
+    "anthropic",
+    "agent",
+    "code-review",
+    "vulnerability"
+  ]
+}

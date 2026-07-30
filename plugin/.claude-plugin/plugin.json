@@ -1,0 +1,5 @@
+{
+  "name": "claude-security",
+  "version": "0.1.1",
+  "description": "Claude-powered security scanning skills (threat model, discovery, validation, attack-path analysis, finalize)."
+}

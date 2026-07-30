@@ -1,0 +1,11 @@
+# This file must live HERE, not at the package root.
+#
+# package.json has a `files` whitelist, and npm does not apply root-level
+# ignore rules to the contents of a directory named in it — a root .npmignore
+# silently fails to exclude anything under plugin/. Keeping the rules inside
+# the directory they apply to is what actually works.
+#
+# Verified with `npm pack --dry-run`: without this file, 23 .pyc files ship.
+__pycache__/
+*.pyc
+.DS_Store

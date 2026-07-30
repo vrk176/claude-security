@@ -1,0 +1,64 @@
+Claude Security
+Copyright 2026 vrk
+
+This product includes software developed by OpenAI:
+
+    Codex Security
+    Copyright 2025 OpenAI
+    https://github.com/openai/codex-security
+    Licensed under the Apache License, Version 2.0
+
+Claude Security is a derivative work of Codex Security. It is not an OpenAI
+product and is not endorsed by or affiliated with OpenAI.
+
+
+## Statement of changes (Apache License 2.0, Section 4(b))
+
+The Codex runtime driver was replaced with the Claude Agent SDK. The scanning
+pipeline it drives is reused from Codex Security because it is model-agnostic.
+
+Reused from Codex Security. File counts below were verified by direct comparison
+against sdk/typescript/_bundled_plugin in the upstream repository at commit
+f22d4a36f26d16287bcdfd707b369116e02a08c3 (2026-07-28), so this statement can be
+re-checked independently:
+
+  - plugin/scripts/  — 31 Python files, 16,154 lines: the scan contract
+    finalizer, sealer, validators, and the SQLite workbench. 9 files are
+    byte-for-byte identical; 22 carry changes, in nearly all cases limited to
+    renaming the product, its state directory, and its report/SARIF branding.
+  - plugin/schemas/  — the 3 canonical JSON Schemas. All 3 are changed, only to
+    rebrand identifier prefixes. The schema `$id` URLs still point at the
+    upstream project, which is where the contract is defined.
+  - plugin/skills/   — 26 files (13 SKILL.md scan procedures and their
+    references); 7 identical, 19 changed. Changes are rebranding, plus the
+    deep-scan discovery phase reimplementation described below.
+  - plugin/references/ — 8 shared reference documents; 1 identical, 7 rebranded.
+
+New in Claude Security:
+
+  - src/               — 3,500 lines of TypeScript: the CLI, target resolution,
+    the Claude Agent SDK driver, usage/cost accounting, scan history, policy
+    gating, bulk scanning, the pre-commit hook generator, and credentials.
+  - plugin/scripts/workbench_bridge.py — 326 lines; a JSON dispatch layer over
+    the workbench functions. Upstream's workbench_cli.py parses arguments only;
+    its command implementations are library functions, so a caller outside the
+    Codex CLI needs its own entry point.
+
+Reimplemented rather than ported:
+
+  - The repeated-discovery phase of deep-security-scan. Upstream ships that
+    orchestration as a compressed build artifact with no readable source, so it
+    could not be ported by reading. The phase boundaries, merge discipline, and
+    centralized validation tail are preserved; the round scheduling is written
+    natively using ordinary subagents. Treat it as a reimplementation of that
+    phase, not a byte-for-byte port.
+
+
+## Trademarks
+
+The Apache License does not grant trademark rights (Section 6).
+
+"Claude" and "Anthropic" are trademarks of Anthropic. This project is an
+independent, unaffiliated tool that calls Anthropic's API; it is not published,
+endorsed, or supported by Anthropic. "OpenAI" and "Codex" are trademarks of
+OpenAI, used here only to identify the upstream project this work derives from.
