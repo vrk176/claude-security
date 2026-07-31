@@ -79,6 +79,14 @@ The legacy ranking, raw/deduped candidate, per-finding receipt, and phase-report
 - Repository-wide coverage ledger: `<coverage_dir>/repository_coverage_ledger.md`
   - This is a coverage artifact, not a findings list: it should include checked surfaces with not_applicable, suppressed, deferred, or reportable dispositions.
 - Reviewed surfaces summary: `<coverage_dir>/reviewed_surfaces.md` if applicable
+- Reviewed file receipts: `<coverage_dir>/reviewed_files.txt`
+  - One repository-relative path per line, for every in-scope file you finished reviewing.
+  - **Append after each batch, before moving to the next one.** This is the only durable
+    per-file record of how far discovery got: a run that stops at the budget or turn cap
+    leaves this file behind, and a resume reads it to skip what is already done.
+  - Discovery is complete when this file covers every path in
+    `<discovery_dir>/in_scope_files.txt` — not when the candidate ledger is non-empty. A
+    clean repository legitimately produces zero candidates and must still be able to finish.
 
 ## Validation (Phase 3) Paths
 

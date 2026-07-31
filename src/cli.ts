@@ -85,6 +85,28 @@ interface ParsedArgs {
   sourceRoot?: string;
 }
 
+/** A malformed command line. Always an exit-2 condition, never exit 1. */
+class UsageError extends Error {}
+
+/**
+ * Every flag the parser accepts.
+ *
+ * Used for two things: rejecting unknown flags instead of dropping them, and
+ * telling "the value is missing" apart from "the value happens to look odd".
+ * A silently ignored `--max-cost` is a scan with no spending cap, and a typo'd
+ * `--fail-on-severity` is a CI gate that quietly stops gating.
+ */
+const KNOWN_FLAGS = new Set([
+  "--path", "--output-dir", "--model", "--effort", "--python",
+  "--max-turns", "--max-cost", "--json", "--dry-run", "--resume",
+  "--diff", "--working-tree", "--deep", "--uninstall", "--with-api-key",
+  "--force", "--reason", "--scan", "--workers", "--max-attempts",
+  "--fail-on-impact", "--fail-on-severity", "--export-format", "--output",
+  "--source-root", "--help", "-h", "--version", "-v",
+]);
+
+const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+
 function parse(argv: string[]): ParsedArgs {
   const args: ParsedArgs = {
     command: argv[0] ?? "help",
@@ -99,29 +121,65 @@ function parse(argv: string[]): ParsedArgs {
     withApiKey: false,
   };
   const rest = argv.slice(1);
-  for (let i = 0; i < rest.length; i++) {
+
+  let i = 0;
+  /** Consume the next token as a value, refusing another flag or nothing. */
+  const value = (flag: string): string => {
+    const next = rest[i + 1];
+    if (next === undefined || KNOWN_FLAGS.has(next)) {
+      throw new UsageError(`${flag} needs a value.`);
+    }
+    i += 1;
+    return next;
+  };
+  const positiveNumber = (flag: string): number => {
+    const raw = value(flag);
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new UsageError(`${flag} must be a positive number, not '${raw}'.`);
+    }
+    return parsed;
+  };
+  const positiveInteger = (flag: string): number => {
+    const raw = value(flag);
+    const parsed = Number(raw);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+      throw new UsageError(`${flag} must be a positive whole number, not '${raw}'.`);
+    }
+    return parsed;
+  };
+
+  for (; i < rest.length; i++) {
     const a = rest[i];
     switch (a) {
       case "--path":
-        args.paths.push(rest[++i]);
+        args.paths.push(value("--path"));
         break;
       case "--output-dir":
-        args.outputDir = rest[++i];
+        args.outputDir = value("--output-dir");
         break;
       case "--model":
-        args.model = rest[++i];
+        args.model = value("--model");
         break;
       case "--effort":
-        args.effort = rest[++i] as ScanOptions["effort"];
+        {
+          const raw = value("--effort");
+          if (!(EFFORT_LEVELS as readonly string[]).includes(raw)) {
+            throw new UsageError(
+              `--effort must be one of: ${EFFORT_LEVELS.join(", ")} (got '${raw}').`,
+            );
+          }
+          args.effort = raw as ScanOptions["effort"];
+        }
         break;
       case "--python":
-        args.pythonPath = rest[++i];
+        args.pythonPath = value("--python");
         break;
       case "--max-turns":
-        args.maxTurns = Number(rest[++i]);
+        args.maxTurns = positiveInteger("--max-turns");
         break;
       case "--max-cost":
-        args.maxCostUsd = Number(rest[++i]);
+        args.maxCostUsd = positiveNumber("--max-cost");
         break;
       case "--json":
         args.json = true;
@@ -133,7 +191,7 @@ function parse(argv: string[]): ParsedArgs {
         args.resume = true;
         break;
       case "--diff":
-        args.diff = rest[++i];
+        args.diff = value("--diff");
         break;
       case "--working-tree":
         args.workingTree = true;
@@ -151,37 +209,40 @@ function parse(argv: string[]): ParsedArgs {
         args.force = true;
         break;
       case "--reason":
-        args.reason = rest[++i];
+        args.reason = value("--reason");
         break;
       case "--scan":
-        args.scanId = rest[++i];
+        args.scanId = value("--scan");
         break;
       case "--workers":
-        args.workers = Number(rest[++i]);
+        args.workers = positiveInteger("--workers");
         break;
       case "--max-attempts":
-        args.maxAttempts = Number(rest[++i]);
+        args.maxAttempts = positiveInteger("--max-attempts");
         break;
       case "--fail-on-impact":
-        args.failOnImpact = rest[++i];
+        args.failOnImpact = value("--fail-on-impact");
         break;
       case "--fail-on-severity":
-        args.failOnSeverity = rest[++i];
+        args.failOnSeverity = value("--fail-on-severity");
         break;
       case "--export-format":
-        args.exportFormat = rest[++i];
+        args.exportFormat = value("--export-format");
         break;
       case "--output":
-        args.output = rest[++i];
+        args.output = value("--output");
         break;
       case "--source-root":
-        args.sourceRoot = rest[++i];
+        args.sourceRoot = value("--source-root");
         break;
       default:
-        if (a.startsWith("--")) break;
+        if (a.startsWith("--")) {
+          throw new UsageError(`Unknown option '${a}'. Run --help for usage.`);
+        }
         // Two positionals for `scans match|compare BEFORE AFTER`.
         if (args.target === undefined) args.target = a;
         else if (args.secondTarget === undefined) args.secondTarget = a;
+        else throw new UsageError(`Unexpected extra argument '${a}'.`);
     }
   }
   return args;
@@ -317,7 +378,7 @@ async function cmdScan(args: ParsedArgs): Promise<number> {
   // A scan that never sealed cannot be policy-checked: its findings are not
   // final. Report the runtime failure (exit 2) rather than an implied pass.
   const policy = result.ok
-    ? evaluatePolicy(result.scanDir, threshold, impactThreshold)
+    ? evaluatePolicy(result.scanDir, threshold, impactThreshold, args.pythonPath)
     : null;
 
   if (args.json) {
@@ -378,7 +439,7 @@ function cmdPolicy(args: ParsedArgs): number {
 
   let result;
   try {
-    result = evaluatePolicy(args.target, threshold, impactThreshold);
+    result = evaluatePolicy(args.target, threshold, impactThreshold, args.pythonPath);
   } catch (err) {
     process.stderr.write(`error: ${(err as Error).message}\n`);
     return 2;
@@ -857,10 +918,13 @@ function cmdStatus(args: ParsedArgs): number {
       (state.inScopeFileCount !== undefined ? ` (${state.inScopeFileCount} files)` : "") +
       "\n" +
       `  discovery       ${mark(state.completed.includes("discovery"))}` +
-      (state.ledgerRows !== undefined
-        ? ` (${state.ledgerRows} candidates)`
-        : state.workLedgerRows !== undefined
-          ? ` (${state.workLedgerRows} files reviewed)`
+      // File coverage is what closes discovery, so lead with it. Candidate
+      // count alone told the reader nothing about how much was left to scan.
+      (state.reviewedFileCount !== undefined && state.inScopeFileCount !== undefined
+        ? ` (${state.reviewedFileCount}/${state.inScopeFileCount} files reviewed` +
+          (state.ledgerRows !== undefined ? `, ${state.ledgerRows} candidates)` : ")")
+        : state.ledgerRows !== undefined
+          ? ` (${state.ledgerRows} candidates)`
           : "") +
       "\n" +
       `  validation      ${mark(state.completed.includes("validation"))}` +
@@ -902,7 +966,28 @@ export async function main(argv: string[]): Promise<number> {
     usage();
     return 0;
   }
-  const args = parse(argv);
+  // Strip a subcommand before parsing. `scans compare A B` has two real
+  // positionals; leaving "compare" in front would consume one of their slots
+  // and make a valid command look like it had an extra argument.
+  const subcommandOf = new Set(["scans", "findings", "login"]);
+  const sub =
+    subcommandOf.has(argv[0]) && argv[1] && !argv[1].startsWith("--")
+      ? argv[1]
+      : undefined;
+
+  let args: ParsedArgs;
+  try {
+    args = parse(sub ? [argv[0], ...argv.slice(2)] : argv);
+  } catch (err) {
+    if (err instanceof UsageError) {
+      // A malformed command line is invalid input, so exit 2. Exit 1 is
+      // reserved for a completed scan that violates policy, and conflating the
+      // two makes CI read a typo as a security finding.
+      process.stderr.write(`error: ${err.message}\n`);
+      return 2;
+    }
+    throw err;
+  }
   if (args.command === "--version" || args.command === "-v") {
     process.stdout.write(VERSION + "\n");
     return 0;
@@ -920,27 +1005,16 @@ export async function main(argv: string[]): Promise<number> {
       return cmdUsage(args);
     case "install-hook":
       return cmdInstallHook(args);
-    case "login": {
-      const sub = argv[1] && !argv[1].startsWith("--") ? argv[1] : undefined;
-      const inner = sub ? parse(["login", ...argv.slice(2)]) : args;
-      return cmdLogin(inner, sub);
-    }
+    case "login":
+      return cmdLogin(args, sub);
     case "logout":
       return cmdLogout(args);
     case "bulk-scan":
       return cmdBulkScan(args);
-    case "findings": {
-      const sub = argv[1] && !argv[1].startsWith("--") ? argv[1] : undefined;
-      const inner = sub ? parse(["findings", ...argv.slice(2)]) : args;
-      return cmdFindings(inner, sub);
-    }
-    case "scans": {
-      // `scans list [REPO]` / `scans show <id>`: the subcommand occupies the
-      // first positional slot, so re-parse without it to recover the target.
-      const sub = argv[1] && !argv[1].startsWith("--") ? argv[1] : undefined;
-      const inner = sub ? parse(["scans", ...argv.slice(2)]) : args;
-      return await cmdScans(inner, sub);
-    }
+    case "findings":
+      return cmdFindings(args, sub);
+    case "scans":
+      return await cmdScans(args, sub);
     case "info":
       return cmdInfo(args);
     case "help":

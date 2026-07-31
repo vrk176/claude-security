@@ -13,8 +13,17 @@ export type ScanPhase =
 
 export interface ScanState {
   scanDir: string;
-  /** True when the directory holds no scan artifacts at all. */
+  /** True when the directory has no entries at all. */
   empty: boolean;
+  /**
+   * True when the directory holds at least one recognizable scan artifact.
+   *
+   * Distinct from `empty`: a directory can be full of unrelated files and still
+   * hold nothing to resume. Conflating the two makes a fresh scan into a
+   * non-empty directory report artifacts that do not exist, and advise a resume
+   * that would silently skip history registration.
+   */
+  hasArtifacts: boolean;
   /** Phases already satisfied on disk. */
   completed: ScanPhase[];
   /** The first phase that still needs work, or null when the scan is sealed. */
@@ -30,6 +39,10 @@ export interface ScanState {
   diffScan?: boolean;
   /** Per-file completion rows, for diff scans. */
   workLedgerRows?: number;
+  /** In-scope files with a completion receipt. */
+  reviewedFileCount?: number;
+  /** In-scope files still lacking one. Zero means discovery is genuinely done. */
+  unreviewedFileCount?: number;
   hasFindings: boolean;
   hasCoverage: boolean;
   hasManifest: boolean;
@@ -45,6 +58,49 @@ const PHASE_ORDER: ScanPhase[] = [
   "canonical_json",
   "sealed",
 ];
+
+/** Read a newline-delimited path list into a set, ignoring blanks and comments. */
+function readPathSet(path: string): Set<string> {
+  const set = new Set<string>();
+  try {
+    for (const line of readFileSync(path, "utf8").split("\n")) {
+      const value = line.trim();
+      if (value && !value.startsWith("#")) set.add(value);
+    }
+  } catch {
+    // An unreadable receipt file means no coverage evidence, not full coverage.
+  }
+  return set;
+}
+
+/**
+ * Collect one field from every JSONL row that passes `accept`.
+ *
+ * A truncated final line is expected after an interrupted run, so a row that
+ * fails to parse is skipped rather than throwing away the rows before it.
+ */
+function readJsonlField(
+  path: string,
+  field: string,
+  accept: (row: Record<string, unknown>) => boolean = () => true,
+): Set<string> {
+  const set = new Set<string>();
+  try {
+    for (const line of readFileSync(path, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const row = JSON.parse(line) as Record<string, unknown>;
+        const value = row[field];
+        if (typeof value === "string" && value && accept(row)) set.add(value);
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    // Same reasoning as readPathSet: absent evidence is not evidence of coverage.
+  }
+  return set;
+}
 
 function countLines(path: string): number {
   try {
@@ -113,6 +169,8 @@ export function inspectScanState(scanDir: string): ScanState {
   // Likewise, a diff scan records per-file completion in work_ledger.jsonl
   // rather than accumulating candidates in candidate_ledger.jsonl.
   const workLedger = join(discovery, "work_ledger.jsonl");
+  // Standard scans record per-file completion here; see references/scan-artifacts.md.
+  const reviewedFiles = join(scanDir, "artifacts", "03_coverage", "reviewed_files.txt");
 
   const findings = join(scanDir, "findings.json");
   const coverage = join(scanDir, "coverage.json");
@@ -122,6 +180,7 @@ export function inspectScanState(scanDir: string): ScanState {
   const state: ScanState = {
     scanDir,
     empty: true,
+    hasArtifacts: false,
     completed: [],
     nextPhase: "threat_model",
     hasFindings: existsSync(findings),
@@ -150,11 +209,36 @@ export function inspectScanState(scanDir: string): ScanState {
     state.diffScan = true;
   }
 
-  // Diff scans close discovery with a per-file work ledger instead of a
-  // candidate ledger; treat a completed worklist as discovery done.
-  if (!existsSync(ledger) && existsSync(workLedger)) {
-    state.workLedgerRows = countLines(workLedger);
-    if (state.workLedgerRows > 0) state.completed.push("discovery");
+  // Discovery closes on file coverage, never on candidate count.
+  //
+  // Counting rows fails in both directions: one candidate found in the first of
+  // 640 files would close discovery and silently skip the other 639, while a
+  // genuinely clean repository produces zero candidates and could never finish
+  // at all. Reconcile the reviewed set against the in-scope set instead, so the
+  // question is "was every file looked at", which is what coverage means.
+  const expected = existsSync(inScope)
+    ? readPathSet(inScope)
+    : existsSync(diffWorklist)
+      // The diff worklist keys its rows on `path`; work_ledger.jsonl keys its
+      // completion rows on `file`. Reconciling them requires both names.
+      ? readJsonlField(diffWorklist, "path")
+      : null;
+
+  // A sealed scan had its coverage validated by the finalizer, so re-deriving a
+  // count here would only produce a misleading "0/1 reviewed" next to "done".
+  if (!state.sealed && expected !== null && expected.size > 0) {
+    const reviewed = existsSync(workLedger)
+      ? readJsonlField(workLedger, "file", (row) => row.status === "complete")
+      : existsSync(reviewedFiles)
+        ? readPathSet(reviewedFiles)
+        : new Set<string>();
+
+    let covered = 0;
+    for (const path of expected) if (reviewed.has(path)) covered += 1;
+    state.reviewedFileCount = covered;
+    state.unreviewedFileCount = expected.size - covered;
+    if (existsSync(workLedger)) state.workLedgerRows = countLines(workLedger);
+    if (state.unreviewedFileCount === 0) state.completed.push("discovery");
   }
 
   if (existsSync(ledger)) {
@@ -164,9 +248,9 @@ export function inspectScanState(scanDir: string): ScanState {
     state.ledgerValidated = parsed.filter((row) => row.validation !== undefined).length;
     state.ledgerAttackPath = parsed.filter((row) => row.attack_path !== undefined).length;
     state.attackPathEligible = attackPathEligible(parsed);
-    if (rows > 0) state.completed.push("discovery");
     // Validation must touch every row; attack-path only the eligible ones.
-    const validationDone = rows > 0 && state.ledgerValidated === rows;
+    const validationDone =
+      state.completed.includes("discovery") && state.ledgerValidated === rows;
     if (validationDone) state.completed.push("validation");
     // Eligibility is derived from validation dispositions, so an unvalidated
     // ledger yields 0 eligible rows — which would otherwise read as "0 of 0
@@ -186,13 +270,28 @@ export function inspectScanState(scanDir: string): ScanState {
       }
     }
   }
-  if (state.sealed) state.completed.push("sealed");
+  if (state.sealed) {
+    // Sealing runs the contract finalizer, which validates coverage against the
+    // manifest. A sealed scan is therefore complete by definition, and
+    // re-deriving phases from artifacts would report a finished scan as partial
+    // whenever it predates a change in how those artifacts are recorded.
+    for (const phase of PHASE_ORDER) {
+      if (!state.completed.includes(phase)) state.completed.push(phase);
+    }
+  }
 
   // A sealed scan is finished by definition — never advertise a next phase for
   // it, even if an intermediate artifact looks incomplete.
   state.nextPhase = state.sealed
     ? null
     : (PHASE_ORDER.find((phase) => !state.completed.includes(phase)) ?? null);
+
+  state.hasArtifacts =
+    state.completed.length > 0 ||
+    state.hasFindings ||
+    state.hasCoverage ||
+    state.hasManifest ||
+    state.sealed;
   return state;
 }
 
@@ -230,6 +329,25 @@ export function describeScanState(state: ScanState): string {
     }
   } else {
     lines.push("- Candidate ledger: NOT STARTED.");
+  }
+  if (state.unreviewedFileCount !== undefined && state.unreviewedFileCount > 0) {
+    // Naming the count is not enough: the agent has to be able to *derive* the
+    // remaining set, or it re-reads files that already have receipts. Give it
+    // the exact command, since a wrong guess here is what makes a resume cost
+    // as much as a fresh scan.
+    lines.push(
+      `- File coverage: ${state.reviewedFileCount}/${state.inScopeFileCount} reviewed, ` +
+        `${state.unreviewedFileCount} still to review.`,
+      "  Get the exact remaining set before reviewing anything:",
+      "",
+      "    comm -23 <(sort artifacts/02_discovery/in_scope_files.txt) \\",
+      "             <(sort artifacts/03_coverage/reviewed_files.txt)",
+      "",
+      "  Review only those files. Append each one to",
+      "  `artifacts/03_coverage/reviewed_files.txt` as you finish it, so the next resume",
+      "  skips it. Re-reviewing a file that already has a receipt wastes budget and can",
+      "  overwrite good work.",
+    );
   }
   lines.push(
     state.completed.includes("canonical_json")

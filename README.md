@@ -230,6 +230,23 @@ code, where fingerprints legitimately drift.
 A missing finding is only treated as resolved when the later scan's coverage is
 `complete`; otherwise `comparable` is false and the report says so.
 
+**A resume inherits the original scan's identity.** The runtime writes
+`.runtime/scan-state.json` beside the artifacts, recording the workbench scan id, the
+repository, its revision, the mode, and the scope. `--resume` reads it back, so the
+resumed run finishes the scan history row it started instead of leaving it `running`
+forever, and the workbench keeps ownership of sealing.
+
+That record is also what makes a resume refuse the wrong directory. Resuming repository B
+into repository A's bundle — or the same repository after HEAD moved, or with a different
+scope — mixes two codebases into one result whose completed phases describe code that is
+no longer there. Each mismatch is named:
+
+```
+error: Refusing to resume: this scan directory belongs to a different scan.
+  - revision: recorded 929a3a5, got 7061dca — the checkout moved, so the finished
+    phases describe different code
+```
+
 Registration happens at launch, not afterwards — the workbench tracks a scan while it
 runs, and requires an empty scan directory, so `--resume` does not re-register. If the
 workbench is unavailable the scan still proceeds; history is never allowed to block a
@@ -264,6 +281,14 @@ Severity order: `critical > high > medium > low > informational`.
 
 A second, opt-in gate asks a different question — "how bad if it *were* reachable?" — see
 [CI gating: severity vs impact](#ci-gating-severity-vs-impact).
+
+**The seal is verified before any finding is trusted.** `policy` runs the bundle's
+contract validator first, so an unsealed bundle — or one whose `findings.json` or
+`coverage.json` was edited after sealing — exits 2 instead of reporting zero violations.
+Emptying `findings.json` and setting coverage to `complete` used to pass a
+`--fail-on-severity` gate; it now fails closed. There is deliberately no flag to skip this:
+a gate with a bypass is the same gate with an extra step. This is why `policy` needs
+Python, like `export` already did.
 
 **Incomplete coverage outranks a passing policy.** A scan whose `coverage.completeness` is
 not `complete` exits 2 even with zero violations: it did not finish, so it cannot prove the

@@ -1,7 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { canonicalize } from "./paths.js";
+import { pluginDirectory, resolvePython } from "./runtime.js";
 
 /** Severity levels, most severe first. */
 export const SEVERITY_LEVELS = [
@@ -18,6 +20,38 @@ export type Severity = (typeof SEVERITY_LEVELS)[number];
 function rank(level: string): number {
   const index = SEVERITY_LEVELS.indexOf(level as Severity);
   return index === -1 ? SEVERITY_LEVELS.length : index;
+}
+
+/**
+ * Verify the bundle's seal before any finding is trusted.
+ *
+ * Without this, `policy` is a gate that reads whatever `findings.json` happens
+ * to contain: emptying that file and setting coverage to `complete` makes a
+ * tampered scan report zero violations and exit 0. The finalizer already
+ * computes and checks artifact digests, so the check is a delegation, not a
+ * reimplementation — and it stays offline: no agent, no credentials, no network.
+ *
+ * Deliberately not overridable. A gate with a "skip verification" flag is the
+ * same gate with an extra step for whoever wants to bypass it.
+ */
+function verifySeal(scanDir: string, pythonPath?: string): void {
+  const python = resolvePython(pythonPath);
+  const script = join(pluginDirectory(), "scripts", "validate_scan_contract.py");
+  const run = spawnSync(python, [script, "--scan-dir", scanDir], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (run.error) {
+    throw new Error(`Failed to run ${python}: ${run.error.message}`);
+  }
+  if (run.status !== 0) {
+    // argparse prints a usage block ahead of the real message; keep the last line.
+    const detail =
+      run.stderr?.trim().split("\n").filter(Boolean).pop() ?? "unknown error";
+    throw new Error(
+      `Seal verification failed, so this scan cannot be policy-checked: ${detail}`,
+    );
+  }
 }
 
 export interface PolicyViolation {
@@ -45,6 +79,9 @@ export interface PolicyResult {
   completeness: string;
   /** True when coverage is anything other than "complete". */
   coverageIncomplete: boolean;
+  /** True once the bundle's seal and artifact digests verified. Always true on
+   * a returned result — verification failure throws instead. */
+  sealVerified: boolean;
   /** Terminal verdict. */
   verdict: "pass" | "violation" | "incomplete";
   /** Exit code implied by the verdict. */
@@ -82,8 +119,11 @@ export function evaluatePolicy(
   scanDirectory: string,
   threshold: Severity | null,
   impactThreshold: Severity | null = null,
+  pythonPath?: string,
 ): PolicyResult {
   const scanDir = canonicalize(scanDirectory);
+  // Integrity first: an unsealed or edited bundle is not evidence of anything.
+  verifySeal(scanDir, pythonPath);
   const findingsPath = join(scanDir, "findings.json");
   const coveragePath = join(scanDir, "coverage.json");
 
@@ -164,6 +204,7 @@ export function evaluatePolicy(
     scanDir,
     threshold,
     impactThreshold,
+    sealVerified: true,
     violations,
     severityCounts,
     totalFindings: rows.length,

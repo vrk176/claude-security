@@ -10,6 +10,12 @@ import {
   canonicalize,
   type ResolvedTarget,
 } from "./paths.js";
+import {
+  assertResumeMatches,
+  readScanRecord,
+  writeScanRecord,
+  type ScanIdentity,
+} from "./scanrecord.js";
 import { inspectScanState, describeScanState, type ScanState } from "./state.js";
 import { UsageAccumulator, writeUsage, type UsageSnapshot } from "./usage.js";
 import type { ScanContract } from "./history.js";
@@ -285,13 +291,24 @@ export async function runScan(
   // are the only durable record of a partial run, and overwriting them silently
   // throws away work that was already paid for.
   const existing = inspectScanState(scanDir);
-  if (!existing.empty && !options.resume) {
+  if (existing.hasArtifacts && !options.resume) {
     throw new Error(
       `Output directory already contains scan artifacts (${existing.completed.join(", ") || "partial work"}).\n` +
         "Pass resume/--resume to continue it, or choose an empty output directory.",
     );
   }
-  if (options.resume && existing.empty) {
+  // A directory that is merely non-empty is a different problem: there is
+  // nothing to resume, and the workbench requires an empty directory to
+  // register the scan. Saying "contains scan artifacts" here would be false,
+  // and advising --resume would skip registration and lose the history record.
+  if (!existing.empty && !existing.hasArtifacts && !options.resume) {
+    throw new Error(
+      `Output directory is not empty and holds no scan artifacts: ${scanDir}\n` +
+        "A scan needs its own empty directory. Point --output-dir at a new path, " +
+        "for example a fresh subdirectory.",
+    );
+  }
+  if (options.resume && !existing.hasArtifacts) {
     throw new Error(
       `Nothing to resume: ${scanDir} contains no scan artifacts. Run without --resume to start a scan.`,
     );
@@ -335,7 +352,39 @@ export async function runScan(
     options.onMessage?.({ type: "history_warning", message });
   };
 
+  const identity: ScanIdentity = {
+    repoRoot: target.repoRoot,
+    targetId: target.targetId,
+    mode: options.workingTree
+      ? "working-tree"
+      : options.diff
+        ? "diff"
+        : options.deep
+          ? "deep"
+          : "standard",
+    scope,
+    diffBase: options.diff ?? null,
+  };
+
   let scanId: string | undefined;
+
+  // A resume inherits the original scan's identity instead of starting a new
+  // one. Without this the workbench row stays `running` forever, the agent is
+  // told to seal a scan the workbench still owns, and nothing checks that the
+  // directory being resumed belongs to this target at all.
+  if (options.resume) {
+    const record = readScanRecord(scanDir);
+    if (record) {
+      assertResumeMatches(record, identity);
+      scanId = record.scanId ?? undefined;
+    } else {
+      warn(
+        "no runtime scan record found, so this resume cannot restore the original " +
+          "scan id or verify the target; it will not be recorded in scan history",
+      );
+    }
+  }
+
   if (!options.resume && options.recordHistory !== false) {
     try {
       const registered = registerScan({
@@ -356,6 +405,22 @@ export async function runScan(
       scanId = registered.scanId;
     } catch (err) {
       warn(`scan history unavailable: ${(err as Error).message}`);
+    }
+  }
+
+  // Persist identity for any later resume, including runs with history off:
+  // knowing which target a directory belongs to matters even when the workbench
+  // is not involved.
+  if (!options.resume) {
+    try {
+      writeScanRecord(scanDir, {
+        schemaVersion: 1,
+        scanId: scanId ?? null,
+        ...identity,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      warn(`could not persist the scan record: ${(err as Error).message}`);
     }
   }
 
