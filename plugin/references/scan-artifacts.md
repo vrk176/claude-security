@@ -83,7 +83,13 @@ The legacy ranking, raw/deduped candidate, per-finding receipt, and phase-report
   - Rebuild `<discovery_dir>/candidate_ledger.jsonl` from the whole `raw/` directory after
     each batch. Candidates that exist only in `raw/` are invisible to every later phase.
 - Reviewed file receipts: `<coverage_dir>/reviewed_files.txt`
-  - One repository-relative path per line, for every in-scope file you finished reviewing.
+  - One JSON object per line, for every in-scope file you finished reviewing:
+    `{"path": "class/foo.py", "lines": 412}` where `lines` is that file's exact line
+    count. The count is checked against the file, so a receipt cannot be written
+    without having read its length, and one left behind for a file that has since
+    changed is rejected instead of silently counted.
+  - A bare path on its own line is still accepted for older scans, but carries no
+    evidence and is reported as unverified.
   - **Append after each batch, before moving to the next one.** This is the only durable
     per-file record of how far discovery got: a run that stops at the budget or turn cap
     leaves this file behind, and a resume reads it to skip what is already done.

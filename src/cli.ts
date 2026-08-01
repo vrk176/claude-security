@@ -935,6 +935,14 @@ function cmdStatus(args: ParsedArgs): number {
       // count alone told the reader nothing about how much was left to scan.
       (state.reviewedFileCount !== undefined && state.inScopeFileCount !== undefined
         ? ` (${state.reviewedFileCount}/${state.inScopeFileCount} files reviewed` +
+          // Surface receipts that assert a review without evidence of one: the
+          // count alone reads as coverage it has not demonstrated.
+          (state.unverifiedReceiptCount
+            ? `, ${state.unverifiedReceiptCount} unverified`
+            : "") +
+          (state.rejectedReceiptCount
+            ? `, ${state.rejectedReceiptCount} rejected`
+            : "") +
           (state.ledgerRows !== undefined ? `, ${state.ledgerRows} candidates)` : ")")
         : state.ledgerRows !== undefined
           ? ` (${state.ledgerRows} candidates)`

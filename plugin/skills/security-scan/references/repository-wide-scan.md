@@ -15,7 +15,7 @@ Keep repository-relative paths in artifacts. Do not skip a file just because it 
 
 For an app scan, keep `reviewItemsTotal` at zero while building the file list. Then publish the file count, review files in batches, and update `reviewItemsCompleted` after each batch.
 
-After each batch, append every file you finished reviewing to `<coverage_dir>/reviewed_files.txt`, one repository-relative path per line. Append as you go rather than writing the file once at the end: if the run stops at a budget or turn cap, this is the only record of which files were already reviewed, and anything missing from it will be reviewed again at cost. Discovery is not complete until this file covers every path in `in_scope_files.txt`.
+After each batch, append every file you finished reviewing to `<coverage_dir>/reviewed_files.txt`, one JSON object per line: `{"path": "class/foo.py", "lines": 412}`, where `lines` is the file's exact line count. Append as you go rather than writing the file once at the end: if the run stops at a budget or turn cap, this is the only record of which files were already reviewed, and anything missing from it will be reviewed again at cost. Discovery is not complete until this file covers every path in `in_scope_files.txt`.
 
 ## Discover And Combine Once
 

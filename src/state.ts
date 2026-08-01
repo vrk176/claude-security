@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { readScanRecord } from "./scanrecord.js";
 
 /** Phases of a standard scan, in the order the skill runs them. */
 export type ScanPhase =
@@ -45,6 +46,10 @@ export interface ScanState {
   unreviewedFileCount?: number;
   /** The actual files still to review, in scope order. */
   unreviewedFiles?: string[];
+  /** Receipts that assert a review but carry no checkable evidence of one. */
+  unverifiedReceiptCount?: number;
+  /** Receipts whose stated line count does not match the file on disk. */
+  rejectedReceiptCount?: number;
   hasFindings: boolean;
   hasCoverage: boolean;
   hasManifest: boolean;
@@ -85,6 +90,72 @@ function readPathSet(path: string): Set<string> {
     // An unreadable receipt file means no coverage evidence, not full coverage.
   }
   return set;
+}
+
+interface ReceiptSet {
+  reviewed: Set<string>;
+  /** Accepted, but with nothing that shows the file was opened. */
+  unverified: number;
+  /** Claimed a line count that the file on disk contradicts. */
+  rejected: number;
+}
+
+/**
+ * Read review receipts, checking the evidence each one carries.
+ *
+ * A bare path asserts "I reviewed this" and costs one line to write, so on its
+ * own it distinguishes a reviewed file from an unreviewed one only as far as the
+ * agent is honest. Measured on a real scan, 170 of 505 receipts had no candidate
+ * and no coverage note behind them.
+ *
+ * The evidenced form is `{"path": "...", "lines": N}`, and N is checked against
+ * the file. That does not prove the review was any good — nothing here can — but
+ * it does mean a receipt cannot be written without having read the file's
+ * length, and a stale receipt for a file that has since changed is caught rather
+ * than counted.
+ */
+function readReceipts(path: string, repoRoot: string | undefined): ReceiptSet {
+  const reviewed = new Set<string>();
+  let unverified = 0;
+  let rejected = 0;
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return { reviewed, unverified, rejected };
+  }
+
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (!line.startsWith("{")) {
+      reviewed.add(line);
+      unverified += 1;
+      continue;
+    }
+    let row: { path?: string; lines?: number };
+    try {
+      row = JSON.parse(line) as { path?: string; lines?: number };
+    } catch {
+      continue;
+    }
+    const file = row.path;
+    if (!file) continue;
+    if (typeof row.lines !== "number" || !repoRoot) {
+      reviewed.add(file);
+      unverified += 1;
+      continue;
+    }
+    const actual = countLines(join(repoRoot, file));
+    if (actual !== row.lines) {
+      // Do not count it: either the file changed since the review, or the
+      // receipt was written without opening it.
+      rejected += 1;
+      continue;
+    }
+    reviewed.add(file);
+  }
+  return { reviewed, unverified, rejected };
 }
 
 /**
@@ -241,11 +312,15 @@ export function inspectScanState(scanDir: string): ScanState {
   // A sealed scan had its coverage validated by the finalizer, so re-deriving a
   // count here would only produce a misleading "0/1 reviewed" next to "done".
   if (!state.sealed && expected !== null && expected.size > 0) {
-    const reviewed = existsSync(workLedger)
-      ? readJsonlField(workLedger, "file", (row) => row.status === "complete")
-      : existsSync(reviewedFiles)
-        ? readPathSet(reviewedFiles)
-        : new Set<string>();
+    let reviewed: Set<string>;
+    if (existsSync(workLedger)) {
+      reviewed = readJsonlField(workLedger, "file", (row) => row.status === "complete");
+    } else {
+      const receipts = readReceipts(reviewedFiles, readScanRecord(scanDir)?.repoRoot);
+      reviewed = receipts.reviewed;
+      state.unverifiedReceiptCount = receipts.unverified;
+      state.rejectedReceiptCount = receipts.rejected;
+    }
 
     const remaining: string[] = [];
     let covered = 0;

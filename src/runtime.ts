@@ -1,8 +1,22 @@
 import { mkdir } from "node:fs/promises";
-import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, isAbsolute, join, resolve, relative as relativePath } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  resolve,
+  relative as relativePath,
+} from "node:path";
 
 import {
   resolveTarget,
@@ -296,6 +310,118 @@ export function assertScopeInsideRepository(repoRoot: string, scope: string[]): 
   }
 }
 
+/**
+ * Rebuild the candidate ledger from every raw batch file.
+ *
+ * The skill asks the agent to do this after each batch, and a real run showed it
+ * skipping the step: seven new raw files appeared and the ledger stayed at its
+ * old row count, so a batch that had been paid for was invisible to validation.
+ * The combiner is deterministic and reads only the raw rows, so the runtime can
+ * simply redo it.
+ *
+ * Guarded, because it is destructive after discovery: enrichment records live in
+ * the ledger, not in `raw/`, and the combiner rejects an enriched ledger as
+ * input. Rebuilding once any row carries a validation record would throw that
+ * work away, so this only runs while the ledger is still raw.
+ */
+/** Fields a raw candidate row may carry; mirrors references/scan-artifacts.md. */
+const RAW_CANDIDATE_FIELDS = new Set([
+  "cwe_ids",
+  "locations",
+  "summary",
+  "evidence",
+  "context",
+  "instance",
+]);
+
+function rebuildCandidateLedger(
+  scanDir: string,
+  repoRoot: string,
+  python: string,
+): { rebuilt: boolean; reason?: string; stripped?: string } {
+  const discovery = join(scanDir, "artifacts", "02_discovery");
+  const rawDir = join(discovery, "raw");
+  const ledger = join(discovery, "candidate_ledger.jsonl");
+  const inScope = join(discovery, "in_scope_files.txt");
+  if (!existsSync(rawDir) || !existsSync(inScope)) return { rebuilt: false };
+
+  const inputs = readdirSync(rawDir)
+    .filter((name) => name.endsWith(".jsonl"))
+    .map((name) => join(rawDir, name));
+  if (inputs.length === 0) return { rebuilt: false };
+
+  if (existsSync(ledger)) {
+    const enriched = readFileSync(ledger, "utf8")
+      .split("\n")
+      .some((line: string) => {
+        if (!line.trim()) return false;
+        try {
+          const row = JSON.parse(line) as Record<string, unknown>;
+          return row.validation !== undefined || row.attack_path !== undefined;
+        } catch {
+          return false;
+        }
+      });
+    if (enriched) {
+      return { rebuilt: false, reason: "ledger already carries enrichment records" };
+    }
+  }
+
+  // Drop unknown top-level fields before combining.
+  //
+  // The combiner rejects the whole invocation on one unexpected key, which is
+  // right for a contract check but wrong for a recovery step: on a real scan two
+  // stray fields across 46 batch files blocked all 535 candidates. The contract
+  // defines which fields carry meaning, so an extra one is noise — but dropping
+  // it silently would hide the agent going off-spec, hence the warning below.
+  const staged = join(scanDir, ".runtime", "raw-normalized");
+  rmSync(staged, { recursive: true, force: true });
+  mkdirSync(staged, { recursive: true });
+  const dropped = new Map<string, number>();
+  const stagedInputs: string[] = [];
+  for (const input of inputs) {
+    const out: string[] = [];
+    for (const line of readFileSync(input, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      let row: Record<string, unknown>;
+      try {
+        row = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        // Leave a malformed row in place so the combiner reports it precisely.
+        out.push(line);
+        continue;
+      }
+      for (const key of Object.keys(row)) {
+        if (!RAW_CANDIDATE_FIELDS.has(key)) {
+          delete row[key];
+          dropped.set(key, (dropped.get(key) ?? 0) + 1);
+        }
+      }
+      out.push(JSON.stringify(row));
+    }
+    const target = join(staged, basename(input));
+    writeFileSync(target, out.join("\n") + "\n", "utf8");
+    stagedInputs.push(target);
+  }
+
+  const script = join(pluginDirectory(), "scripts", "normalize_candidates.py");
+  const run = spawnSync(
+    python,
+    [script, "--input", ...stagedInputs, "--out", ledger, "--repo-root", repoRoot,
+     "--in-scope-files", inScope],
+    { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
+  );
+  if (run.status !== 0) {
+    const detail = run.stderr?.trim().split("\n").filter(Boolean).pop() ?? "unknown error";
+    return { rebuilt: false, reason: detail };
+  }
+  const strippedNote =
+    dropped.size > 0
+      ? [...dropped.entries()].map(([k, n]) => `${k} (${n})`).join(", ")
+      : undefined;
+  return { rebuilt: true, stripped: strippedNote };
+}
+
 export async function runScan(
   rawPath: string,
   options: ScanOptions = {},
@@ -559,6 +685,18 @@ export async function runScan(
 
   const snapshot = accumulator.snapshot();
   writeUsage(scanDir, snapshot);
+
+  // Fold in any raw batches the agent wrote but did not combine.
+  const rebuild = rebuildCandidateLedger(scanDir, target.repoRoot, python);
+  if (rebuild.reason) {
+    warn(`candidate ledger not rebuilt: ${rebuild.reason}`);
+  }
+  if (rebuild.stripped) {
+    warn(
+      `raw candidates carried fields the contract does not define, dropped before ` +
+        `combining: ${rebuild.stripped}`,
+    );
+  }
 
   // Sealing is owned by whoever the prompt said owns it. With history enabled the
   // agent leaves an unsealed draft and the workbench finalizes it here, stamping the
