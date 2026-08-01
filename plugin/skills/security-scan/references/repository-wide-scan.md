@@ -23,11 +23,19 @@ Review every listed file from start to finish. Read nearby code when needed to u
 
 Do not stop reviewing a file after finding one bug.
 
-Write raw candidates to one or more temporary JSONL files, then combine them:
+Write raw candidates to `<discovery_dir>/raw/<batch>.jsonl`, one file per batch, and
+rebuild the ledger **after every batch** — not once at the end:
 
 ```text
-<python_command> <plugin_dir>/scripts/normalize_candidates.py --input <candidate-source> [<candidate-source> ...] --out <discovery_dir>/candidate_ledger.jsonl --repo-root <repo_root> --in-scope-files <discovery_dir>/in_scope_files.txt
+<python_command> <plugin_dir>/scripts/normalize_candidates.py --input <discovery_dir>/raw/*.jsonl --out <discovery_dir>/candidate_ledger.jsonl --repo-root <repo_root> --in-scope-files <discovery_dir>/in_scope_files.txt
 ```
+
+Both parts of that matter. Use the fixed `raw/` path, because a resume can only pick up
+candidates it can find. Rerun the combiner after each batch, because the ledger is the
+only artifact later phases read: a run that stops at the budget or turn cap with candidates
+sitting in `raw/` and no ledger looks, to every downstream step, exactly like a run that
+found nothing. The combiner is deterministic and cheap to rerun over the whole `raw/`
+directory, so rebuilding is always safe.
 
 Each raw candidate row uses only these fields:
 
@@ -36,6 +44,10 @@ Each raw candidate row uses only these fields:
 - `summary` and `evidence`: concise text describing the possible bug and the code path.
 - optional `context`: concise text that may help the review.
 - optional `instance`: a short label for separate bugs that share the same locations, such as different request parameters or operations.
+
+Any other field makes the combiner reject that row and fail the whole invocation, which
+leaves you with no ledger at all. Keep extra notes inside `summary`, `evidence`, or
+`context` rather than inventing a field for them.
 
 The combiner validates this shape and merges rows with the same CWE ids, locations, and optional instance. It preserves their text and writes deterministic rows with a stable `candidate_id`. It does not infer a status or decide whether a candidate is a bug. `candidate_ledger.jsonl` is the sole durable candidate artifact for a standard scan. Do not create one ledger or report per candidate, validation or attack-path queues, duplicate reports, or repeated receipts.
 

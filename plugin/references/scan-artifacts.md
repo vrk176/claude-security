@@ -79,6 +79,9 @@ The legacy ranking, raw/deduped candidate, per-finding receipt, and phase-report
 - Repository-wide coverage ledger: `<coverage_dir>/repository_coverage_ledger.md`
   - This is a coverage artifact, not a findings list: it should include checked surfaces with not_applicable, suppressed, deferred, or reportable dispositions.
 - Reviewed surfaces summary: `<coverage_dir>/reviewed_surfaces.md` if applicable
+- Raw candidates, one file per batch: `<discovery_dir>/raw/<batch>.jsonl`
+  - Rebuild `<discovery_dir>/candidate_ledger.jsonl` from the whole `raw/` directory after
+    each batch. Candidates that exist only in `raw/` are invisible to every later phase.
 - Reviewed file receipts: `<coverage_dir>/reviewed_files.txt`
   - One repository-relative path per line, for every in-scope file you finished reviewing.
   - **Append after each batch, before moving to the next one.** This is the only durable
