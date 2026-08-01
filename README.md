@@ -248,9 +248,21 @@ error: Refusing to resume: this scan directory belongs to a different scan.
 ```
 
 Registration happens at launch, not afterwards — the workbench tracks a scan while it
-runs, and requires an empty scan directory, so `--resume` does not re-register. If the
-workbench is unavailable the scan still proceeds; history is never allowed to block a
-scan. Pass `recordHistory: false` in the SDK to opt out.
+runs, and requires an empty scan directory, so `--resume` does not re-register.
+
+**A failed registration stops the scan.** Without a workbench row there is no target
+contract, so the agent authors its own manifest identity and seals its own result: the
+finalizer can still check that bundle's structure, but nothing shows it describes this
+repository at this revision. That provenance gap is invisible in the output, so the scan
+is refused rather than produced. Pass `recordHistory: false` in the SDK when an
+unrecorded scan is what you actually want — the difference between "history is off" and
+"history broke" is the whole point.
+
+**Scope is checked before the agent starts.** An absolute path, a missing path, or one
+that escapes the repository — including through a symlink — exits 2 up front, under
+`--dry-run` too. The workbench rejects a bad recipe as well, but only after the path has
+reached the prompt, and content sent to a model cannot be recalled by failing the scan
+afterwards.
 
 **Sealing ownership follows history.** When a scan is recorded, the agent leaves an
 unsealed canonical draft and the workbench finalizes it, stamping the timestamps,

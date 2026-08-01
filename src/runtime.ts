@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve, relative as relativePath } from "node:path";
 
 import {
   resolveTarget,
@@ -266,6 +266,36 @@ function buildPrompt(args: {
  * Drive a Claude Agent SDK session that performs a security scan.
  * Returns the scan bundle paths and usage once the agent finishes.
  */
+/**
+ * Reject a scope path that is absent, absolute, or outside the repository.
+ *
+ * The workbench rejects a bad recipe at registration, but that is too late and
+ * only happens when history is available: by then the path is already in the
+ * prompt, and an agent with Read and Bash will have acted on it. Content that
+ * has left the machine cannot be recalled by failing the scan afterwards, so
+ * this runs before anything is spent — including under `--dry-run`, which is
+ * meant to be the cheap way to find exactly this kind of mistake.
+ */
+export function assertScopeInsideRepository(repoRoot: string, scope: string[]): void {
+  const repoReal = canonicalize(repoRoot);
+  for (const entry of scope) {
+    if (isAbsolute(entry)) {
+      throw new Error(`Scope path must be repository-relative, not absolute: ${entry}`);
+    }
+    const resolved = resolve(repoReal, entry);
+    if (!existsSync(resolved)) {
+      throw new Error(`Scope path does not exist in the repository: ${entry}`);
+    }
+    // Compare canonical paths so a symlink pointing outside cannot smuggle the
+    // scan out of the repository.
+    const real = canonicalize(resolved);
+    const rel = relativePath(repoReal, real);
+    if (rel.startsWith("..") || isAbsolute(rel)) {
+      throw new Error(`Scope path escapes the repository: ${entry} resolves to ${real}`);
+    }
+  }
+}
+
 export async function runScan(
   rawPath: string,
   options: ScanOptions = {},
@@ -279,7 +309,23 @@ export async function runScan(
   const python = resolvePython(options.pythonPath);
   const scope = options.paths ?? [];
 
-  if (scanDir.startsWith(target.repoRoot + "/") || scanDir === target.repoRoot) {
+  assertScopeInsideRepository(target.repoRoot, scope);
+
+  // Guard rails on the target and the output directory.
+  if (options.deep && (options.diff || options.workingTree)) {
+    throw new Error(
+      "Deep scans cover a repository or scoped path; they do not take a diff target.",
+    );
+  }
+  if (options.diff && options.workingTree) {
+    throw new Error("Use either diff/--diff or workingTree/--working-tree, not both.");
+  }
+  if ((options.diff || options.workingTree) && !target.git) {
+    throw new Error(
+      `A diff scan needs a Git repository, but ${target.repoRoot} is not one.`,
+    );
+  }
+  if (scanDir === target.repoRoot || scanDir.startsWith(target.repoRoot + "/")) {
     throw new Error(
       "Output directory must be outside the scanned repository. Use --output-dir with a path outside the target.",
     );
@@ -316,30 +362,6 @@ export async function runScan(
   if (options.resume && existing.sealed) {
     throw new Error(
       `Nothing to resume: ${scanDir} is already sealed (report.md exists).`,
-    );
-  }
-
-  // A cost cap the runtime cannot price is a cap in name only.
-  if (options.maxCostUsd !== undefined) {
-    const model = options.model ?? "claude-opus-5";
-    if (!costLimitSupported(model)) {
-      throw new Error(
-        `No price table for ${model}, so a scan cost limit cannot be reported for it. ` +
-          "Drop maxCostUsd/--max-cost, or use a model with known pricing.",
-      );
-    }
-  }
-  if (options.deep && (options.diff || options.workingTree)) {
-    throw new Error(
-      "Deep scans cover a repository or scoped path; they do not take a diff target.",
-    );
-  }
-  if (options.diff && options.workingTree) {
-    throw new Error("Use either diff/--diff or workingTree/--working-tree, not both.");
-  }
-  if ((options.diff || options.workingTree) && !target.git) {
-    throw new Error(
-      `A diff scan needs a Git repository, but ${target.repoRoot} is not one.`,
     );
   }
 
@@ -404,7 +426,21 @@ export async function runScan(
       });
       scanId = registered.scanId;
     } catch (err) {
-      warn(`scan history unavailable: ${(err as Error).message}`);
+      // Registration failing is not the same as history being switched off.
+      //
+      // Without a workbench row there is no target contract, so the agent
+      // authors its own manifest identity and seals its own scan. The finalizer
+      // can check that bundle's structure but cannot show it describes this
+      // repository at this revision — the provenance is the model's word. That
+      // is a materially weaker result than the one asked for, so it is refused
+      // rather than produced silently. Opt out deliberately with
+      // `recordHistory: false` if an unrecorded scan is what you want.
+      throw new Error(
+        `Cannot record this scan in history: ${(err as Error).message}\n` +
+          "Without a workbench record the scan would author its own provenance, " +
+          "which cannot be verified. Fix the cause, or pass recordHistory: false " +
+          "to run an explicitly unrecorded scan.",
+      );
     }
   }
 

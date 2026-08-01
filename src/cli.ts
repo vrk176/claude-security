@@ -10,7 +10,12 @@ import {
   SEVERITY_LEVELS,
   type Severity,
 } from "./policy.js";
-import { pluginDirectory, runScan, type ScanOptions } from "./runtime.js";
+import {
+  assertScopeInsideRepository,
+  pluginDirectory,
+  runScan,
+  type ScanOptions,
+} from "./runtime.js";
 import { describeUsage, type UsageSnapshot } from "./usage.js";
 import { installHook, uninstallHook, hookLocation } from "./hook.js";
 import {
@@ -320,6 +325,14 @@ async function cmdScan(args: ParsedArgs): Promise<number> {
     return 2;
   }
   const target = resolveTarget(args.target);
+  // Check scope here too: --dry-run never reaches runScan, and validating input
+  // is the whole point of a dry run.
+  try {
+    assertScopeInsideRepository(target.repoRoot, args.paths);
+  } catch (err) {
+    process.stderr.write(`error: ${(err as Error).message}\n`);
+    return 2;
+  }
   // Match what runScan will actually use, so --dry-run shows the real path.
   const scanDir = args.outputDir
     ? canonicalize(args.outputDir)
