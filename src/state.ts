@@ -43,11 +43,25 @@ export interface ScanState {
   reviewedFileCount?: number;
   /** In-scope files still lacking one. Zero means discovery is genuinely done. */
   unreviewedFileCount?: number;
+  /** The actual files still to review, in scope order. */
+  unreviewedFiles?: string[];
   hasFindings: boolean;
   hasCoverage: boolean;
   hasManifest: boolean;
   sealed: boolean;
 }
+
+/**
+ * Files handed to the agent per discovery batch.
+ *
+ * Chosen from what actually worked: on a real 640-file scan the model's own
+ * batches ran 11-33 files with a median of 20, and those resumed cleanly. The
+ * one run that treated its whole remaining set (143 files) as a single batch
+ * spent its entire budget and wrote nothing, because the receipts are only
+ * written when a batch closes. Twenty bounds the loss from an interrupted batch
+ * to a few dollars.
+ */
+const DISCOVERY_BATCH_SIZE = 20;
 
 const PHASE_ORDER: ScanPhase[] = [
   "threat_model",
@@ -233,10 +247,15 @@ export function inspectScanState(scanDir: string): ScanState {
         ? readPathSet(reviewedFiles)
         : new Set<string>();
 
+    const remaining: string[] = [];
     let covered = 0;
-    for (const path of expected) if (reviewed.has(path)) covered += 1;
+    for (const path of expected) {
+      if (reviewed.has(path)) covered += 1;
+      else remaining.push(path);
+    }
     state.reviewedFileCount = covered;
-    state.unreviewedFileCount = expected.size - covered;
+    state.unreviewedFileCount = remaining.length;
+    state.unreviewedFiles = remaining;
     if (existsSync(workLedger)) state.workLedgerRows = countLines(workLedger);
     if (state.unreviewedFileCount === 0) state.completed.push("discovery");
   }
@@ -330,23 +349,39 @@ export function describeScanState(state: ScanState): string {
   } else {
     lines.push("- Candidate ledger: NOT STARTED.");
   }
-  if (state.unreviewedFileCount !== undefined && state.unreviewedFileCount > 0) {
-    // Naming the count is not enough: the agent has to be able to *derive* the
-    // remaining set, or it re-reads files that already have receipts. Give it
-    // the exact command, since a wrong guess here is what makes a resume cost
-    // as much as a fresh scan.
+  const remaining = state.unreviewedFiles ?? [];
+  if (remaining.length > 0) {
+    // Hand over one concrete batch rather than a way to compute one.
+    //
+    // Telling the agent to diff two files leaves both "which files" and "how
+    // many at once" to it, and a resume that picked the whole remaining set as
+    // one batch burned its entire budget without writing a single receipt.
+    // Batch boundaries are a deterministic local computation, so the runtime
+    // makes them instead of asking.
+    const batch = remaining.slice(0, DISCOVERY_BATCH_SIZE);
+    const batches = Math.ceil(remaining.length / DISCOVERY_BATCH_SIZE);
     lines.push(
       `- File coverage: ${state.reviewedFileCount}/${state.inScopeFileCount} reviewed, ` +
-        `${state.unreviewedFileCount} still to review.`,
-      "  Get the exact remaining set before reviewing anything:",
+        `${remaining.length} still to review, in ${batches} batch(es) of ` +
+        `${DISCOVERY_BATCH_SIZE}.`,
+      "",
+      `  Review exactly these ${batch.length} files now — this batch, nothing else:`,
+      ...batch.map((path) => `    ${path}`),
+      "",
+      "  Then, before starting anything further:",
+      "    1. append each reviewed path to `artifacts/03_coverage/reviewed_files.txt`",
+      "    2. write this batch's candidates to `artifacts/02_discovery/raw/<batch>.jsonl`",
+      "    3. rebuild `candidate_ledger.jsonl` from the whole `raw/` directory",
+      "",
+      "  Only then take the next batch, which is the first",
+      `  ${DISCOVERY_BATCH_SIZE} files still missing from reviewed_files.txt:`,
       "",
       "    comm -23 <(sort artifacts/02_discovery/in_scope_files.txt) \\",
-      "             <(sort artifacts/03_coverage/reviewed_files.txt)",
+      `             <(sort artifacts/03_coverage/reviewed_files.txt) | head -${DISCOVERY_BATCH_SIZE}`,
       "",
-      "  Review only those files. Append each one to",
-      "  `artifacts/03_coverage/reviewed_files.txt` as you finish it, so the next resume",
-      "  skips it. Re-reviewing a file that already has a receipt wastes budget and can",
-      "  overwrite good work.",
+      "  Do not widen a batch or defer the writes to the end. A batch that is",
+      "  interrupted before its receipts are written costs everything it spent, and",
+      "  the next resume repeats it from scratch.",
     );
   }
   lines.push(
