@@ -3,3 +3,8 @@ dist/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Local-only working notes. The audit report carries absolute paths from the
+# machine it was written on, and its filename says not to publish it.
+*审计报告*
+*不push到github*
