@@ -1,6 +1,6 @@
 {
   "name": "claude-security",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Claude-powered security scanning: CLI and TypeScript SDK that drives the Claude Agent SDK through bundled scan skills and seals results into a verifiable scan contract (JSON, SARIF, Markdown).",
   "license": "Apache-2.0",
   "author": "vrk",
