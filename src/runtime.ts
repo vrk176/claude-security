@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -457,7 +458,19 @@ export async function runScan(
     );
   }
 
-  await mkdir(scanDir, { recursive: true });
+  // 0o700, because the workbench refuses a scan directory other users can read.
+  // A scan bundle holds source excerpts, vulnerability detail, and reproduction
+  // steps; on a shared machine the default 0o755 would publish all of it. Set the
+  // mode explicitly rather than relying on umask, and re-apply it to a directory
+  // that already exists so an earlier loose-permission run is corrected here
+  // instead of failing at registration.
+  await mkdir(scanDir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(scanDir, 0o700);
+  } catch {
+    // A directory we cannot chmod will be rejected by the workbench with a
+    // clearer message than anything we could raise here.
+  }
 
   // Refuse to start a fresh scan on top of an existing one: the phase artifacts
   // are the only durable record of a partial run, and overwriting them silently

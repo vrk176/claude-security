@@ -40,6 +40,11 @@ def cmd_register(conn, payload: dict) -> dict:
         repository=None,
         recipe_json=None,
         parent_scan_id=None,
+        # Upstream's --archived-scan-dir supports reusing a previously archived
+        # output directory. This port always registers into a fresh directory,
+        # so the value is absent — but the workbench reads the attribute
+        # unconditionally, and omitting it is an AttributeError at registration.
+        archived_scan_dir=None,
     )
     result = db.register_cli_scan(conn, args)
     conn.commit()

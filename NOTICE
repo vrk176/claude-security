@@ -19,13 +19,14 @@ pipeline it drives is reused from Codex Security because it is model-agnostic.
 
 Reused from Codex Security. File counts below were verified by direct comparison
 against sdk/typescript/_bundled_plugin in the upstream repository at commit
-f22d4a36f26d16287bcdfd707b369116e02a08c3 (2026-07-28), so this statement can be
+5625adc159bbbfb4bd85557d83e2805d27379230 (2026-07-31), so this statement can be
 re-checked independently:
 
-  - plugin/scripts/  — 31 Python files, 16,154 lines: the scan contract
-    finalizer, sealer, validators, and the SQLite workbench. 9 files are
-    byte-for-byte identical; 22 carry changes, in nearly all cases limited to
-    renaming the product, its state directory, and its report/SARIF branding.
+  - plugin/scripts/  — 31 Python files, 16,672 lines: the scan contract
+    finalizer, sealer, validators, and the SQLite workbench. 26 files are
+    byte-for-byte identical once the product rename is applied; 5 carry further
+    changes, limited to SARIF display branding, the state-directory variable
+    name, and two error strings.
   - plugin/schemas/  — the 3 canonical JSON Schemas. All 3 are changed, only to
     rebrand identifier prefixes. The schema `$id` URLs still point at the
     upstream project, which is where the contract is defined.
