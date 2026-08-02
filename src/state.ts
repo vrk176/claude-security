@@ -146,7 +146,7 @@ function readReceipts(path: string, repoRoot: string | undefined): ReceiptSet {
       unverified += 1;
       continue;
     }
-    const actual = countLines(join(repoRoot, file));
+    const actual = countFileLines(join(repoRoot, file));
     if (actual !== row.lines) {
       // Do not count it: either the file changed since the review, or the
       // receipt was written without opening it.
@@ -185,6 +185,31 @@ function readJsonlField(
     // Same reasoning as readPathSet: absent evidence is not evidence of coverage.
   }
   return set;
+}
+
+/**
+ * Total lines in a file, counting blanks.
+ *
+ * Distinct from `countLines`, which skips blank lines because it counts JSONL
+ * records. A receipt states the file's length as `wc -l` reports it, so
+ * verifying it against a blank-skipping count rejects almost every honest
+ * receipt: a real run reported 28 of 37 as forged when all 37 were correct.
+ */
+function countFileLines(path: string): number {
+  try {
+    const text = readFileSync(path, "utf8");
+    if (text.length === 0) return 0;
+    // Match `wc -l`, which the agent reports: count newline terminators, plus a
+    // final unterminated line if the file does not end in one. A file holding a
+    // single newline is one line, not zero.
+    let lines = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      if (text[i] === "\n") lines += 1;
+    }
+    return text.endsWith("\n") ? lines : lines + 1;
+  } catch {
+    return -1;
+  }
 }
 
 function countLines(path: string): number {
