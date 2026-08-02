@@ -147,6 +147,12 @@ function readReceipts(path: string, repoRoot: string | undefined): ReceiptSet {
       continue;
     }
     const actual = countFileLines(join(repoRoot, file));
+    if (actual < 0) {
+      // Unreadable or binary: accept the claim, but do not call it verified.
+      reviewed.add(file);
+      unverified += 1;
+      continue;
+    }
     if (actual !== row.lines) {
       // Do not count it: either the file changed since the review, or the
       // receipt was written without opening it.
@@ -188,25 +194,29 @@ function readJsonlField(
 }
 
 /**
- * Total lines in a file, counting blanks.
+ * Count lines the way `wc -l` does: one per newline terminator.
  *
- * Distinct from `countLines`, which skips blank lines because it counts JSONL
- * records. A receipt states the file's length as `wc -l` reports it, so
- * verifying it against a blank-skipping count rejects almost every honest
- * receipt: a real run reported 28 of 37 as forged when all 37 were correct.
+ * This has to match whatever the agent reports, not whatever is most defensible.
+ * Agents run `wc -l`, so a file whose last line has no terminator reports one
+ * fewer than it "has" — measured on a real scan, seven receipts were rejected
+ * over exactly that off-by-one. Verification exists to catch a receipt written
+ * without opening the file; disagreeing with the tool that produced the number
+ * only catches honest ones.
+ *
+ * Returns -1 for a file that cannot be read as text, which the caller treats as
+ * "no evidence either way" rather than as a mismatch.
  */
 function countFileLines(path: string): number {
   try {
-    const text = readFileSync(path, "utf8");
-    if (text.length === 0) return 0;
-    // Match `wc -l`, which the agent reports: count newline terminators, plus a
-    // final unterminated line if the file does not end in one. A file holding a
-    // single newline is one line, not zero.
+    const buffer = readFileSync(path);
+    // A NUL byte means binary; counting its lines is meaningless, and an image
+    // or archive in scope should not be reported as a forged receipt.
+    if (buffer.includes(0)) return -1;
     let lines = 0;
-    for (let i = 0; i < text.length; i += 1) {
-      if (text[i] === "\n") lines += 1;
+    for (const byte of buffer) {
+      if (byte === 0x0a) lines += 1;
     }
-    return text.endsWith("\n") ? lines : lines + 1;
+    return lines;
   } catch {
     return -1;
   }
